@@ -1,0 +1,257 @@
+---
+title: "NASA Meteorite Landing Trends"
+author: "Sumayya Mohammed"
+date: "2025-05-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+### NASA Meteorite Trends Project 2025
+This personal project analyzes meteorite landing data made public by NASA. The goal is to identify spatial and temporal trends in meteorite discoveries and explore patterns by region, mass, and fall type.
+
+
+## Dataset Overview
+
+This dataset was acquired from https://catalog.data.gov/dataset/meteorite-landings. It is intended for public access and use. It contains data on 38,400 meteorites, and includes information such as mass, meteorite type, year, and whether it had fallen or was found after.
+
+The NASA dataset includes coordinate information for the location of the meteorite but no cities, so the R packages `sf `, `rnaturalearth`, and `rnaturalearthdata` were used to assign the geolocations to countries and make analysis based on region possible.
+
+
+
+```{r loading packages, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(janitor)
+library(lubridate)
+library(naniar)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(DT)
+```
+
+
+## Dataset Cleaning and Preprocessing
+
+It's time to load the dataset and clean up the column names and eliminate any invalid geolocations so they do not skew analysis. Let's also go ahead and check the classes of the numeric columns to ensure they are numeric.
+
+```{r importing datasets, message=FALSE}
+nasa_data <- read_csv("data/Meteorite_Landings.csv")
+
+nasa_data <- nasa_data %>%
+  clean_names() %>%
+    filter(!is.na(reclong) & !is.na(reclat) & !is.na(geo_location)) %>%
+  filter(reclat >= -90 & reclat <= 90, reclong >= -180 & reclong <= 180)
+
+class(nasa_data$mass_g)
+```
+## Setting it up for Analysis!
+Originally, I worked with an additional dataset that had countries and cities along with coordinates, and my goal was to left-join the NASA data with the coordinates from the city dataset. Due to the rare occurrence of exact geolocations matching up, the joins were all unsuccessful, and I moved to another plan.
+This is where the libraries `sf`, `rnaturalearth`, and `rnaturalearthdata` came in. 
+
+```{r, message=FALSE, warning=FALSE}
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# turn the lat and long into spatial object
+meteorites_sf <- st_as_sf(nasa_data, coords = c("reclong", "reclat"), crs = 4326)
+
+# spatial join
+meteorites_with_country <- st_join(meteorites_sf, world["name"])
+
+n_distinct(meteorites_with_country) #every result is unique
+table(is.na(meteorites_with_country$country))
+
+#lets fix the column names and rename the df
+meteorite_landings <- meteorites_with_country %>%
+  rename(name = name.x) %>%
+  rename(country = name.y)
+
+ # get rid of the nulls in country
+meteorite_landings <- meteorite_landings %>%
+  filter(!is.na(country)) 
+
+glimpse(meteorite_landings)
+summary(meteorite_landings)
+```
+These steps led to the current state of the dataset, which I named `meteorite_landings`. **We're ready for analysis now!**
+
+## Research Questions
+
+1. What is the distribution of meteorite landings per country? Which countries have the highest amount of meteorite landings recorded in their history?
+
+2. Are there any yearly patterns to the landings? Are they increasing or decreasing over time, or is there no discernible trend?
+
+3. Are there any trends related to the mass of the meteorites and country of landing? Which countries have the highest average meteorite mass?
+
+4. Working with the recclass column, what are the most common types of meteorites? How are they spread out through countries?
+
+5. Are there clusters of meteorites in certain areas globally? 
+
+## Q1
+###  What is the distribution of meteorite landings per country? Which countries have the highest amount of meteorite landings recorded in their history?
+
+```{r}
+per_country <- meteorite_landings %>%
+  st_drop_geometry() %>%
+  count(country, sort = TRUE) %>%
+  head(10)
+
+per_country
+```
+
+```{r plot1, echo=FALSE}
+per_country %>%
+  head(5) %>%
+  ggplot(aes(x = country, y = n)) +
+  geom_col(fill = "hotpink",position = "stack") +
+  labs(title = "Meteorite Landings Per Country (Top 5)",
+       x = "Country", y = "Number of Meteorites")
+```
+
+Looks like Antarctica is the top hit country, this may make sense due to the sheer size of the territory, but Oman is number two! There seems to be some diversity in the size of the top 10 hit countries, so we cannot say as a rule that the largest countries have the most meteorite landings.
+
+Something else to explore: the `fall` column includes two categories: "fell" and "found". Let's see how many meteorites were found versus fell in each country!
+
+```{r fallvsfound, message=FALSE, warning=FALSE}
+fall_country <- meteorite_landings %>%
+  st_drop_geometry() %>%
+  group_by(country, fall) %>%
+  summarise(n = n())
+
+# change to wide format
+
+fall_country_wide <- fall_country %>%
+  pivot_wider(names_from = fall, values_from = n, values_fill = 0)
+datatable(fall_country_wide)
+
+# sort most by fell
+fell_most <- fall_country_wide %>%
+  select(Fell) %>%
+  arrange(desc(Fell))
+datatable(fell_most)
+
+# sort most by found
+found_most <- fall_country_wide %>%
+  select(Found) %>%
+  arrange(desc(Found))
+datatable(found_most)
+
+```
+
+## Q2
+### Are there any yearly patterns to the landings? Are they increasing or decreasing over time, or is there no discernible trend?
+
+```{r yearly, warning=FALSE, message=FALSE}
+
+by_year <- meteorite_landings %>%
+  st_drop_geometry() %>%
+  filter(!is.na(year)) %>%
+  group_by(year) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+
+datatable(by_year)
+```
+
+The top ten years with the most meteorite landings are all in the range of 1980-2010, except for the topmost result, which falls in 1979. To put these results in better context, the entire dataset ranges from the years of 860 to 2013. The fact that the top 10 hit years are all in a span of 31 years out over a millenia does seem to signify a trend. 
+
+```{r yearlyplot, echo=FALSE}
+by_year %>%
+  ggplot(aes(x = year, y = count)) +
+  geom_col(fill = "navyblue", position = "stack", ) +
+  labs( title = "Meteorite Landings Per Year", x = "Year", y = "Number of Meteorites") +
+  theme_light()
+
+```
+
+
+## Q2
+### Are there any trends related to the mass of the meteorites and country of landing? Which countries have the highest average meteorite mass?
+
+```{r mass, warning=FALSE, message=FALSE}
+heaviest_hits <- meteorite_landings %>%
+  st_drop_geometry() %>%
+  filter(!is.na(mass_g)) %>%
+  group_by(country) %>%
+  summarise(avg_mass = mean(mass_g, na.rm = TRUE),
+            total = n()) %>%
+  arrange(desc(avg_mass)) %>%
+  head(10)
+datatable(heaviest_hits)
+```
+
+There doesn't seem to be any very obvious trends in the countries with the most massive meteorite hits, other than a couple continental overlaps. The first two results are both countries located in Africa, although not very close to each other. Argentina, Colombia, and Brazil are all located in South America. China and Russia are both very large countries in terms of area, and are both on the list. It is also interesting to note that the country with the highest number of hits throughout time, which was Antarctia, is not included with the average highest mass of hits.
+
+## Q4
+### Working with the recclass column, what are the most common types of meteorites? How are they spread out through countries?
+
+```{r recclass, warning=FALSE, message=FALSE}
+top_types <- meteorite_landings %>%
+  st_drop_geometry() %>%
+  group_by(recclass) %>%
+  summarise(n = n()) %>%
+  arrange(desc(n)) %>%
+  head(10)
+top_types
+
+recclass_country <- meteorite_landings %>%
+  st_drop_geometry() %>%
+  count(country, recclass) %>%
+  group_by(country) %>%
+  top_n(1, n) %>%    
+  arrange(desc(n))
+datatable(recclass_country)
+```
+
+This data table shows us the most frequent type of meteorite per country, which for Antarctica (the most hit country) and two more of the most hit countries, is the type L6. We see in the data frame `top_types` that L6 is the #1 most common type. Lets see if there is any connection between the type and the average mass of the meteorite.
+
+
+```{r class mass, warning=FALSE, message=FALSE}
+mass_by_type <- meteorite_landings %>%
+  st_drop_geometry() %>%
+  filter(!is.na(mass_g), !is.na(recclass)) %>%
+  group_by(recclass) %>%
+  summarise(
+    count = n(),
+    avg_mass = mean(mass_g, na.rm = TRUE),
+    median_mass = median(mass_g, na.rm = TRUE),
+    max_mass = max(mass_g, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(avg_mass))
+datatable(mass_by_type)
+```
+
+The L6 type of meteorite is not in any of the highest average mass type result. This means that although it is extremely common, it is not a heavy type. In fact, if you search L6 in the above datatable, it is shown to be in place 125 when the data is sorted by descending average mass. Since this is out 383 total results, it places it somewhat in the center, but nowhere near a high mass result.
+
+## Q5
+### Are there clusters of meteorites in certain areas globally?
+
+Lastly, I want to include a visualization that can depict every single meteorite landing in the dataset on a map of earth.
+```{r}
+map_viz <- ggplot() +
+  geom_sf(data = world, fill = "grey80") +
+  geom_sf(data = meteorite_landings, color = "blue", size = 0.8, alpha = 0.5) +
+  labs(title = "Global Meteorite Landings",
+       caption = "NASA Meteorite Landings + Country Borders") +
+  theme_minimal()
+map_viz
+```
+
+## Insights and Conclusions
+
+This analysis of NASA's meteorite landing dataset reveals several key trends. The most hit country is Antarctica, and second place belongs to Oman, but there is a gigantic difference in the amount between first and second place, as especially obvious on the bar graph. Comparing the instance of "found" versus "fell", there are much more meteorites classified as "found". This could highlight the difficulty associated with observing meteorite landings in real time and that majority of them are found after the event. There is also somewhat of a yearly trend visible, as although the dataset covers the years 860 to 2013, the most landings are seen from 1980-2010. In terms of trends regarding the most massive hits, there are no very obvious patterns except for some results being on the same continent.
+
+Next, analyzing the `recclass` column which categorizes meteorites by type, we saw that the most common meteorite, L6, is not the heaviest, and is quite low in the list when sorted by mass. We also see that it is the most common type found in Antarctica and Oman which have the most hits, and this is an interesting observation as well.
+
+Overall, this project also demonstrates how structured cleaning, spatial joins, and exploratory analysis can uncover meaningful patterns in real-world data. Using R packages such as `sf` and `ggplot2`, the project transformed raw meteorite data into informative visual summaries.  The project also showcased the value of enriching a dataset—using spatial joins with `rnaturalearth` to derive country-level context not originally included. These methods not only improved interpretability but highlighted common issues with public datasets, such as missing values, observational bias, and inconsistent formatting.
+
+
+
+### Limitations
+Some records had missing or imprecise coordinates, which were removed when the null values were filtered.It is also important to keep in mind that meteorite reporting likely varies by country and access to scientific institutions. Additionally, since the dataset itself did not have country information, a spatial join was required. This additional data merging may have introduced some errors into the dataset. 
+There may also be higher representation and more complete reporting in countries with better funded and active scientific communities, so this could mean smaller and less developed countries' data is not ideally complete. These factors should be considered when drawing conclusions from the analysis.
+
+
