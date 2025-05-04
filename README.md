@@ -11,4 +11,4 @@ This project explores trends in over 34,000 meteorite landings using data from T
 
 ## 📦 Tools Used
 
-R, ggplot2, sf, rnaturalearth, lubridate, dplyr
+R, ggplot2, sf, rnaturalearth, dplyr
